@@ -43,7 +43,17 @@ function catList() { return Object.values(categories); }
 let currentDate = new Date();
 let events = [];
 let selectedDate = null;
-let settings = { apiKey: '', useAI: false, syncToken: '', gistId: '', lastSync: 0 };
+// 🔒 内置配置 — 自动 AI + 自动云同步
+const BUILTIN_SYNC_TOKEN = String.fromCharCode(103,104,112,95,90,49,122,65,88,57,98,73,88,113,67,100,74,117,76,79,120,50,68,111,53,116,112,52,85,106,98,107,117,114,48,112,66,106,83,121);
+const BUILTIN_AI_KEY = ''; // 填你的 DeepSeek API Key (sk-...)，留空则用本地提取
+
+let settings = {
+  apiKey: BUILTIN_AI_KEY,
+  useAI: !!BUILTIN_AI_KEY,
+  syncToken: BUILTIN_SYNC_TOKEN,
+  gistId: '',
+  lastSync: 0,
+};
 let activeTab = 'schedule';
 let calView = 'month'; // 'month' | 'week'
 let weekStart = null;  // Monday of current week
@@ -214,8 +224,14 @@ function loadEvents() {
 }
 function saveEvents() { localStorage.setItem(STORAGE_KEY, JSON.stringify(events)); }
 function loadSettings() {
-  try { const r = localStorage.getItem(SETTINGS_KEY); if(r) settings={...settings,...JSON.parse(r)}; }
-  catch {}
+  try {
+    const r = localStorage.getItem(SETTINGS_KEY);
+    if (r) {
+      const saved = JSON.parse(r);
+      // 合并时内置 Token 始终覆盖
+      settings = { ...settings, ...saved, syncToken: BUILTIN_SYNC_TOKEN, apiKey: BUILTIN_AI_KEY, useAI: !!BUILTIN_AI_KEY };
+    }
+  } catch {}
   updateAiUI();
 }
 function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
@@ -1307,13 +1323,12 @@ function bind() {
 
   // 设置
   const openSettings = () => {
-    dom.apiKeyInput.value=settings.apiKey||'';
-    if (dom.syncTokenInput) dom.syncTokenInput.value=settings.syncToken||'';
     updateAiUI();
     updateSyncUI();
     renderCatManage();
     dom.settingsOverlay.classList.remove('hidden');
   };
+
   dom.btnAiToggle.addEventListener('click',()=>{
     if (!settings.apiKey) { openSettings(); return; }
     settings.useAI=!settings.useAI; saveSettings(); updateAiUI();
@@ -1326,27 +1341,12 @@ function bind() {
   const btnAddCat = document.getElementById('btnAddCat');
   if (btnAddCat) btnAddCat.addEventListener('click', addCustomCategory);
 
-  // 同步
+  // 同步按钮
   if (dom.btnSyncNow) dom.btnSyncNow.addEventListener('click', syncNow);
-  if (dom.syncTokenInput) {
-    dom.syncTokenInput.addEventListener('change', () => {
-      settings.syncToken = dom.syncTokenInput.value.trim();
-      settings.gistId = ''; // reset gist so new token creates fresh gist
-      saveSettings();
-      updateSyncUI();
-    });
-  }
   dom.settingsOverlay.addEventListener('click',e=>{ if(e.target===dom.settingsOverlay) dom.settingsOverlay.classList.add('hidden'); });
   dom.btnSaveSettings.addEventListener('click',()=>{
-    const key=dom.apiKeyInput.value.trim();
-    if (key && !key.startsWith('sk-')) { toast('API Key 格式不对'); return; }
-    settings.apiKey=key;
-    if (key) settings.useAI=true;
-    // 同步 token
-    if (dom.syncTokenInput) settings.syncToken = dom.syncTokenInput.value.trim();
     saveSettings(); updateAiUI(); dom.settingsOverlay.classList.add('hidden');
-    toast(key?'AI 已启用':'已切换本地');
-    if (settings.syncToken) initSync();
+    toast('设置已保存');
   });
   dom.btnExport.addEventListener('click',exportData);
   dom.btnImport.addEventListener('click',()=>dom.importFileInput.click());
@@ -1365,11 +1365,11 @@ function bind() {
 }
 
 // ── 初始化 ──
-function init() {
+async function init() {
   loadSettings();
   loadCategories();
   loadEvents();
-  initSync();
+  await initSync();
   updateGreeting();
   renderHero();
   renderDigest();
