@@ -893,37 +893,64 @@ function addCustomCategory() {
 
 // ── 云同步（GitHub Gist）──
 const GIST_API = 'https://api.github.com/gists';
+const GIST_DESC = 'schedule-app-data';
 let syncBusy = false;
 
 function updateSyncUI() {
-  if (dom.syncStatus) {
-    if (settings.gistId && settings.syncToken) {
-      dom.syncStatus.textContent = `已配置 · ${new Date(settings.lastSync).toLocaleString('zh-CN').slice(5)}`;
-      dom.syncStatus.className = 'sync-status synced';
-    } else if (settings.syncToken) {
-      dom.syncStatus.textContent = '点击同步创建';
-      dom.syncStatus.className = 'sync-status';
-    } else {
-      dom.syncStatus.textContent = '未配置';
-      dom.syncStatus.className = 'sync-status';
-    }
+  if (!dom.syncStatus) return;
+  if (settings.gistId && settings.syncToken) {
+    dom.syncStatus.textContent = `已配置 · ${new Date(settings.lastSync).toLocaleString('zh-CN').slice(5)}`;
+    dom.syncStatus.className = 'sync-status synced';
+  } else if (settings.syncToken) {
+    dom.syncStatus.textContent = '点击同步创建';
+    dom.syncStatus.className = 'sync-status';
+  } else {
+    dom.syncStatus.textContent = '未配置';
+    dom.syncStatus.className = 'sync-status';
   }
+}
+
+// 查找已有 Gist（跨设备时自动发现）
+async function findExistingGist() {
+  try {
+    const resp = await fetch(`${GIST_API}?per_page=50`, {
+      headers: { Authorization: `Bearer ${settings.syncToken}` },
+    });
+    if (!resp.ok) return null;
+    const gists = await resp.json();
+    const found = gists.find(g =>
+      g.description === GIST_DESC &&
+      g.files && g.files['schedule-data.json']
+    );
+    return found ? found.id : null;
+  } catch { return null; }
 }
 
 async function syncPush(silent = true) {
   if (!settings.syncToken || syncBusy) return;
   syncBusy = true;
   try {
+    // 如果没有 gistId，先查找已有的
+    if (!settings.gistId) {
+      const existing = await findExistingGist();
+      if (existing) settings.gistId = existing;
+    }
+
     const payload = {
-      description: '我的日程数据',
+      description: GIST_DESC,
       public: false,
       files: {
         'schedule-data.json': {
           content: JSON.stringify({
-            events: events.map(e => ({ ...e, date: e.date.toISOString(), endDate: e.endDate?.toISOString() || null, createdAt: e.createdAt?.toISOString() || null })),
+            events: events.map(e => ({
+              ...e,
+              date: e.date.toISOString(),
+              endDate: e.endDate?.toISOString() || null,
+              createdAt: e.createdAt?.toISOString() || null,
+            })),
             categories,
             updatedAt: Date.now(),
-          }, null, 2),
+          }),
         },
       },
     };
@@ -938,14 +965,14 @@ async function syncPush(silent = true) {
     });
 
     if (!resp.ok) {
-      if (resp.status === 401) throw new Error('Token 无效');
+      if (resp.status === 401) throw new Error('Token 无效或缺少 gist 权限');
+      if (resp.status === 404) { settings.gistId = ''; saveSettings(); throw new Error('Gist 已删除，请重新同步'); }
       throw new Error(`同步失败 (${resp.status})`);
     }
 
     const data = await resp.json();
     if (!settings.gistId) {
       settings.gistId = data.id;
-      saveSettings();
     }
     settings.lastSync = Date.now();
     saveSettings();
@@ -967,7 +994,7 @@ async function syncPull(silent = true) {
       headers: { Authorization: `Bearer ${settings.syncToken}` },
     });
     if (!resp.ok) {
-      if (resp.status === 404) { settings.gistId = ''; saveSettings(); return; }
+      if (resp.status === 404) { settings.gistId = ''; saveSettings(); updateSyncUI(); return; }
       throw new Error(`拉取失败 (${resp.status})`);
     }
 
@@ -978,7 +1005,7 @@ async function syncPull(silent = true) {
     const remote = JSON.parse(file.content);
     const remoteTime = remote.updatedAt || 0;
 
-    // 如果本地更新，跳过拉取
+    // 远程不比本地新，跳过
     if (remoteTime <= settings.lastSync) return;
 
     // 合并数据（以远程为准）
@@ -1002,7 +1029,7 @@ async function syncPull(silent = true) {
     refreshAll();
     if (!silent) toast('☁️ 已从云端同步');
   } catch (err) {
-    if (!silent) console.warn('Sync pull error:', err);
+    if (!silent) console.warn('Sync pull:', err);
   } finally {
     syncBusy = false;
   }
@@ -1010,30 +1037,49 @@ async function syncPull(silent = true) {
 
 async function syncNow() {
   if (!settings.syncToken) {
-    toast('请先填写 GitHub Token');
+    toast('请先填写 GitHub Token（需要勾选 gist 权限）');
     return;
   }
   dom.btnSyncNow.textContent = '⏳...';
   dom.btnSyncNow.disabled = true;
-  await syncPush(false);
-  dom.btnSyncNow.textContent = '🔄 立即同步';
-  dom.btnSyncNow.disabled = false;
-}
-
-function autoSync() {
-  // 配置了同步时，每次保存后自动推送
-  if (settings.syncToken) {
-    syncPush(true);
+  try {
+    // 先拉取远程数据
+    if (settings.gistId) {
+      await syncPull(true);
+    } else {
+      // 新设备：尝试查找已有 Gist
+      const existing = await findExistingGist();
+      if (existing) {
+        settings.gistId = existing;
+        saveSettings();
+        await syncPull(false);
+      }
+    }
+    // 再推送本地数据
+    await syncPush(false);
+  } finally {
+    dom.btnSyncNow.textContent = '🔄 立即同步';
+    dom.btnSyncNow.disabled = false;
   }
 }
 
-// 初始化时拉取远程数据
+function autoSync() {
+  if (settings.syncToken) syncPush(true);
+}
+
 async function initSync() {
-  settings.syncToken = settings.syncToken || dom.syncTokenInput?.value || '';
   if (dom.syncTokenInput) dom.syncTokenInput.value = settings.syncToken || '';
   updateSyncUI();
   if (settings.syncToken && settings.gistId) {
     await syncPull(true);
+  } else if (settings.syncToken && !settings.gistId) {
+    // 新设备：尝试自动发现已有 Gist
+    const existing = await findExistingGist();
+    if (existing) {
+      settings.gistId = existing;
+      saveSettings();
+      await syncPull(true);
+    }
   }
 }
 
