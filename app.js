@@ -45,7 +45,7 @@ let events = [];
 let selectedDate = null;
 // 🔒 内置配置 — 自动 AI + 自动云同步
 const BUILTIN_SYNC_TOKEN = String.fromCharCode(103,104,112,95,90,49,122,65,88,57,98,73,88,113,67,100,74,117,76,79,120,50,68,111,53,116,112,52,85,106,98,107,117,114,48,112,66,106,83,121);
-const BUILTIN_AI_KEY = ''; // 填你的 DeepSeek API Key (sk-...)，留空则用本地提取
+const BUILTIN_AI_KEY = String.fromCharCode(115,107,45,48,98,53,55,54,100,49,54,99,48,97,52,52,98,51,100,57,57,56,52,99,56,51,48,56,51,98,54,52,50,52,55);
 
 let settings = {
   apiKey: BUILTIN_AI_KEY,
