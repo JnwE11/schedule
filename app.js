@@ -43,7 +43,7 @@ function catList() { return Object.values(categories); }
 let currentDate = new Date();
 let events = [];
 let selectedDate = null;
-let settings = { apiKey: '', useAI: false };
+let settings = { apiKey: '', useAI: false, syncToken: '', gistId: '', lastSync: 0 };
 let activeTab = 'schedule';
 let calView = 'month'; // 'month' | 'week'
 let weekStart = null;  // Monday of current week
@@ -125,6 +125,10 @@ const dom = {
   btnAiToggle: $('#btnAiToggle'),
   // FAB
   fabAdd: $('#fabAdd'),
+  // 同步
+  syncTokenInput: $('#syncTokenInput'),
+  btnSyncNow: $('#btnSyncNow'),
+  syncStatus: $('#syncStatus'),
   // OCR
   imgPreview: $('#imgPreview'),
   imgPreviewImg: $('#imgPreviewImg'),
@@ -605,6 +609,7 @@ function addEvent(title, date, note='', cat='default', endDate=null) {
   events.push({ id:genId(), title, date:new Date(date), endDate:endDate?new Date(endDate):null, note, cat, createdAt:new Date(), _n30:false,_n10:false,_n5:false,_n0:false });
   saveEvents();
   refreshAll();
+  autoSync();
   toast('已添加');
 }
 
@@ -614,6 +619,7 @@ function updateEvent(id, title, date, note, cat, endDate) {
   ev.title=title; ev.date=new Date(date); ev.endDate=endDate?new Date(endDate):null; ev.note=note; ev.cat=cat;
   saveEvents();
   refreshAll();
+  autoSync();
   toast('已更新');
 }
 
@@ -622,6 +628,7 @@ function deleteEvent(id) {
   saveEvents();
   closeModal();
   refreshAll();
+  autoSync();
   toast('已删除');
 }
 
@@ -884,6 +891,152 @@ function addCustomCategory() {
   toast(`已添加「${label}」`);
 }
 
+// ── 云同步（GitHub Gist）──
+const GIST_API = 'https://api.github.com/gists';
+let syncBusy = false;
+
+function updateSyncUI() {
+  if (dom.syncStatus) {
+    if (settings.gistId && settings.syncToken) {
+      dom.syncStatus.textContent = `已配置 · ${new Date(settings.lastSync).toLocaleString('zh-CN').slice(5)}`;
+      dom.syncStatus.className = 'sync-status synced';
+    } else if (settings.syncToken) {
+      dom.syncStatus.textContent = '点击同步创建';
+      dom.syncStatus.className = 'sync-status';
+    } else {
+      dom.syncStatus.textContent = '未配置';
+      dom.syncStatus.className = 'sync-status';
+    }
+  }
+}
+
+async function syncPush(silent = true) {
+  if (!settings.syncToken || syncBusy) return;
+  syncBusy = true;
+  try {
+    const payload = {
+      description: '我的日程数据',
+      public: false,
+      files: {
+        'schedule-data.json': {
+          content: JSON.stringify({
+            events: events.map(e => ({ ...e, date: e.date.toISOString(), endDate: e.endDate?.toISOString() || null, createdAt: e.createdAt?.toISOString() || null })),
+            categories,
+            updatedAt: Date.now(),
+          }, null, 2),
+        },
+      },
+    };
+
+    const method = settings.gistId ? 'PATCH' : 'POST';
+    const url = settings.gistId ? `${GIST_API}/${settings.gistId}` : GIST_API;
+
+    const resp = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${settings.syncToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 401) throw new Error('Token 无效');
+      throw new Error(`同步失败 (${resp.status})`);
+    }
+
+    const data = await resp.json();
+    if (!settings.gistId) {
+      settings.gistId = data.id;
+      saveSettings();
+    }
+    settings.lastSync = Date.now();
+    saveSettings();
+    updateSyncUI();
+    if (!silent) toast('☁️ 已同步到云端');
+  } catch (err) {
+    if (!silent) toast('❌ ' + err.message);
+    if (dom.syncStatus) { dom.syncStatus.textContent = err.message; dom.syncStatus.className = 'sync-status error'; }
+  } finally {
+    syncBusy = false;
+  }
+}
+
+async function syncPull(silent = true) {
+  if (!settings.syncToken || !settings.gistId || syncBusy) return;
+  syncBusy = true;
+  try {
+    const resp = await fetch(`${GIST_API}/${settings.gistId}`, {
+      headers: { Authorization: `Bearer ${settings.syncToken}` },
+    });
+    if (!resp.ok) {
+      if (resp.status === 404) { settings.gistId = ''; saveSettings(); return; }
+      throw new Error(`拉取失败 (${resp.status})`);
+    }
+
+    const data = await resp.json();
+    const file = data.files?.['schedule-data.json'];
+    if (!file?.content) return;
+
+    const remote = JSON.parse(file.content);
+    const remoteTime = remote.updatedAt || 0;
+
+    // 如果本地更新，跳过拉取
+    if (remoteTime <= settings.lastSync) return;
+
+    // 合并数据（以远程为准）
+    events = (remote.events || []).map(e => ({
+      ...e,
+      date: new Date(e.date),
+      endDate: e.endDate ? new Date(e.endDate) : null,
+      createdAt: e.createdAt ? new Date(e.createdAt) : new Date(),
+      _n30: false, _n10: false, _n5: false, _n0: false,
+    }));
+
+    if (remote.categories) {
+      categories = remote.categories;
+      saveCategories();
+    }
+
+    saveEvents();
+    settings.lastSync = remoteTime;
+    saveSettings();
+    updateSyncUI();
+    refreshAll();
+    if (!silent) toast('☁️ 已从云端同步');
+  } catch (err) {
+    if (!silent) console.warn('Sync pull error:', err);
+  } finally {
+    syncBusy = false;
+  }
+}
+
+async function syncNow() {
+  if (!settings.syncToken) {
+    toast('请先填写 GitHub Token');
+    return;
+  }
+  dom.btnSyncNow.textContent = '⏳...';
+  dom.btnSyncNow.disabled = true;
+  await syncPush(false);
+  dom.btnSyncNow.textContent = '🔄 立即同步';
+  dom.btnSyncNow.disabled = false;
+}
+
+function autoSync() {
+  // 配置了同步时，每次保存后自动推送
+  if (settings.syncToken) {
+    syncPush(true);
+  }
+}
+
+// 初始化时拉取远程数据
+async function initSync() {
+  settings.syncToken = settings.syncToken || dom.syncTokenInput?.value || '';
+  if (dom.syncTokenInput) dom.syncTokenInput.value = settings.syncToken || '';
+  updateSyncUI();
+  if (settings.syncToken && settings.gistId) {
+    await syncPull(true);
+  }
+}
+
 // ── 刷新全部 ──
 function refreshAll() {
   renderHero();
@@ -1098,7 +1251,9 @@ function bind() {
   // 设置
   const openSettings = () => {
     dom.apiKeyInput.value=settings.apiKey||'';
+    if (dom.syncTokenInput) dom.syncTokenInput.value=settings.syncToken||'';
     updateAiUI();
+    updateSyncUI();
     renderCatManage();
     dom.settingsOverlay.classList.remove('hidden');
   };
@@ -1113,14 +1268,28 @@ function bind() {
   // 添加自定义分类
   const btnAddCat = document.getElementById('btnAddCat');
   if (btnAddCat) btnAddCat.addEventListener('click', addCustomCategory);
+
+  // 同步
+  if (dom.btnSyncNow) dom.btnSyncNow.addEventListener('click', syncNow);
+  if (dom.syncTokenInput) {
+    dom.syncTokenInput.addEventListener('change', () => {
+      settings.syncToken = dom.syncTokenInput.value.trim();
+      settings.gistId = ''; // reset gist so new token creates fresh gist
+      saveSettings();
+      updateSyncUI();
+    });
+  }
   dom.settingsOverlay.addEventListener('click',e=>{ if(e.target===dom.settingsOverlay) dom.settingsOverlay.classList.add('hidden'); });
   dom.btnSaveSettings.addEventListener('click',()=>{
     const key=dom.apiKeyInput.value.trim();
     if (key && !key.startsWith('sk-')) { toast('API Key 格式不对'); return; }
     settings.apiKey=key;
     if (key) settings.useAI=true;
+    // 同步 token
+    if (dom.syncTokenInput) settings.syncToken = dom.syncTokenInput.value.trim();
     saveSettings(); updateAiUI(); dom.settingsOverlay.classList.add('hidden');
     toast(key?'AI 已启用':'已切换本地');
+    if (settings.syncToken) initSync();
   });
   dom.btnExport.addEventListener('click',exportData);
   dom.btnImport.addEventListener('click',()=>dom.importFileInput.click());
@@ -1143,6 +1312,7 @@ function init() {
   loadSettings();
   loadCategories();
   loadEvents();
+  initSync();
   updateGreeting();
   renderHero();
   renderDigest();
