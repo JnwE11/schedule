@@ -1082,7 +1082,12 @@ function checkNotifications() {
 
 // ── 导出导入 ──
 function exportData() {
-  const data=JSON.stringify(events.map(e=>({...e,date:e.date.toISOString(),createdAt:e.createdAt?.toISOString()||null})),null,2);
+  const data=JSON.stringify(events.map(e=>({
+    ...e,
+    date:e.date.toISOString(),
+    endDate:e.endDate?.toISOString()||null,
+    createdAt:e.createdAt?.toISOString()||null,
+  })),null,2);
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([data])); a.download='schedule_'+fmt(new Date())+'.json'; a.click();
   toast('已导出');
 }
@@ -1091,7 +1096,13 @@ function importData(file) {
   r.onload=e=>{
     try {
       const data=JSON.parse(e.target.result); if(!Array.isArray(data)) throw 0;
-      events.push(...data.map(x=>({...x,date:new Date(x.date),createdAt:x.createdAt?new Date(x.createdAt):new Date(),_n30:false,_n10:false,_n5:false,_n0:false})));
+      events.push(...data.map(x=>({
+        ...x,
+        date:new Date(x.date),
+        endDate:x.endDate?new Date(x.endDate):null,
+        createdAt:x.createdAt?new Date(x.createdAt):new Date(),
+        _n30:false,_n10:false,_n5:false,_n0:false,
+      })));
       saveEvents(); refreshAll(); toast(`导入了 ${data.length} 条`);
     } catch { toast('格式错误'); }
   };
