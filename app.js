@@ -219,8 +219,14 @@ const esc = s => { const d=document.createElement('div'); d.textContent=s; retur
 
 // ── 持久化 ──
 function loadEvents() {
-  try { events = (JSON.parse(localStorage.getItem(STORAGE_KEY))||[]).map(e=>({...e,date:new Date(e.date)})); }
-  catch { events = []; }
+  try {
+    events = (JSON.parse(localStorage.getItem(STORAGE_KEY))||[]).map(e=>({
+      ...e,
+      date: new Date(e.date),
+      endDate: e.endDate ? new Date(e.endDate) : null,
+      createdAt: e.createdAt ? new Date(e.createdAt) : new Date(),
+    }));
+  } catch { events = []; }
 }
 function saveEvents() { localStorage.setItem(STORAGE_KEY, JSON.stringify(events)); }
 function loadSettings() {
@@ -960,9 +966,9 @@ async function syncPush(silent = true) {
           content: JSON.stringify({
             events: events.map(e => ({
               ...e,
-              date: e.date.toISOString(),
-              endDate: e.endDate?.toISOString() || null,
-              createdAt: e.createdAt?.toISOString() || null,
+              date: typeof e.date === 'string' ? e.date : e.date.toISOString(),
+              endDate: e.endDate ? (typeof e.endDate === 'string' ? e.endDate : e.endDate.toISOString()) : null,
+              createdAt: e.createdAt ? (typeof e.createdAt === 'string' ? e.createdAt : e.createdAt.toISOString()) : null,
             })),
             categories,
             updatedAt: Date.now(),
