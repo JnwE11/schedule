@@ -501,11 +501,14 @@ function renderWeek() {
   for (const ev of weekEvents) {
     const evStart = ev.date;
     const evEnd = ev.endDate || calcEndTime(evStart);
-    const dayIdx = Math.floor((evStart - ws) / 86400000);
-    if (dayIdx < 0 || dayIdx > 6) continue;
+    let dayIdx = Math.floor((evStart - ws) / 86400000);
+    // 跨周事件：钳制到可见范围
+    if (dayIdx < 0) dayIdx = 0;
+    if (dayIdx > 6) continue;
 
-    // 裁剪到可见范围
-    const visibleStart = Math.max(evStart.getHours() + evStart.getMinutes()/60, VISIBLE_START);
+    // 裁剪到可见范围（处理跨天事件）
+    const startHour = dayIdx < 0 ? VISIBLE_START : evStart.getHours() + evStart.getMinutes()/60;
+    const visibleStart = Math.max(startHour, VISIBLE_START);
     const visibleEnd = Math.min(evEnd.getHours() + evEnd.getMinutes()/60, VISIBLE_END);
     if (visibleEnd <= visibleStart) continue;
 
@@ -679,10 +682,12 @@ function setCatChip(cat) {
 function fmtTmStr(h,m) { return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`; }
 
 function calcEndTime(startDate) {
-  // 默认 +1 小时，取整到半小时
+  // 默认 +1 小时，取整到最近半小时
   const end = new Date(startDate);
-  end.setHours(end.getHours() + 1);
-  end.setMinutes(0,0,0);
+  const m = end.getMinutes();
+  if (m > 0 && m <= 30) { end.setMinutes(30,0,0); }
+  else if (m > 30) { end.setHours(end.getHours() + 1, 0, 0, 0); }
+  else { end.setHours(end.getHours() + 1, 0, 0, 0); }
   return end;
 }
 
@@ -822,19 +827,19 @@ function renderDigest() {
 }
 
 // ── 早安通知 ──
-let morningBriefed = false;
+let morningNotified = false;
 function morningBriefing() {
   const h = new Date().getHours();
-  if (h >= 8 && h <= 11 && !morningBriefed && 'Notification' in window && Notification.permission === 'granted') {
+  if (h >= 8 && h <= 11 && !morningNotified && 'Notification' in window && Notification.permission === 'granted') {
     const today = events.filter(e => sameDay(e.date, new Date()));
     if (today.length > 0) {
       const titles = today.slice(0, 3).map(e => `${fmtTm(e.date)} ${e.title}`).join(' · ');
       new Notification('☀️ 早安！今日概览', { body: titles + (today.length > 3 ? ` ...等${today.length}个日程` : ''), tag: 'morning-brief' });
     }
-    morningBriefed = true;
+    morningNotified = true;
   }
   // 中午后重置，第二天再发
-  if (h >= 13) morningBriefed = false;
+  if (h >= 13) morningNotified = false;
 }
 
 // ── 分类筛选 ──
@@ -1070,12 +1075,14 @@ async function syncNow() {
       await syncPull(true);
     } else {
       // 新设备：尝试查找已有 Gist
-      const existing = await findExistingGist();
-      if (existing) {
-        settings.gistId = existing;
-        saveSettings();
-        await syncPull(false);
-      }
+      try {
+        const existing = await findExistingGist();
+        if (existing) {
+          settings.gistId = existing;
+          saveSettings();
+          await syncPull(false);
+        }
+      } catch { /* findExistingGist already handles errors; fall through */ }
     }
     // 再推送本地数据
     await syncPush(false);
@@ -1387,12 +1394,9 @@ async function init() {
 
   setInterval(renderHero, 5000);
   setInterval(renderDigest, 30000);
-  setInterval(renderCountdown, activeTab==='countdown'?1000:10000);
+  setInterval(() => { if (activeTab === 'countdown') renderCountdown(); }, 1000);
   setInterval(checkNotifications, 30000);
   setInterval(morningBriefing, 60000);
-
-  // 动态刷新倒计时面板
-  setInterval(()=>{ if (activeTab==='countdown') renderCountdown(); }, 1000);
 }
 
 document.addEventListener('DOMContentLoaded', init);
